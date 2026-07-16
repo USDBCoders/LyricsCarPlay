@@ -3,8 +3,9 @@ import ShazamKit
 import AVFoundation
 
 @MainActor
-final class ShazamRecognitionService: NSObject, @preconcurrency SHSessionDelegate {
-    private let session = SHSession()
+final class ShazamRecognitionService:
+    NSObject,
+    @preconcurrency SHSessionDelegate {    private let session = SHSession()
     private let engine = AVAudioEngine()
     private var continuation: CheckedContinuation<Track, Error>?
 
