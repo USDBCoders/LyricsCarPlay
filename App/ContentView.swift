@@ -20,8 +20,8 @@ struct ContentView: View {
                 if model.track != nil {
                     HStack {
                         Button("−2 s") { model.adjust(-2) }.buttonStyle(.bordered)
-                        Text("Décalage : \(model.offset, specifier: "%.0f") s").monospacedDigit()
-                        Button("+2 s") { model.adjust(2) }.buttonStyle(.bordered)
+Text("Décalage : \(model.offset, specifier: "%.0f") s")
+    .monospacedDigit()                        Button("+2 s") { model.adjust(2) }.buttonStyle(.bordered)
                     }
                 }
                 Spacer()
