@@ -1,22 +1,24 @@
-name: iOS Build
+name: Build unsigned iPhone IPA
 
 on:
   push:
-    branches: [main]
-  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+        run: |
+          sudo xcode-select \
+            -s /Applications/Xcode_16.4.app/Contents/Developer
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -24,37 +26,65 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Build for iOS Simulator
+      - name: Build unsigned application
         run: |
           set -o pipefail
+
           xcodebuild \
             -project LyricsCarPlay.xcodeproj \
             -scheme LyricsCarPlay \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
-            clean build | tee "$RUNNER_TEMP/xcodebuild.log"
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build \
+            | tee "$RUNNER_TEMP/xcodebuild.log"
 
-      - name: Package simulator application
+      - name: Locate application
         run: |
-          cd "$RUNNER_TEMP/DerivedData/Build/Products/Debug-iphonesimulator"
-          ditto -c -k --sequesterRsrc --keepParent LyricsCarPlay.app "$GITHUB_WORKSPACE/LyricsCarPlay-simulator.zip"
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/LyricsCarPlay.app"
 
-      - name: Upload build artifact
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Application introuvable : $APP_PATH"
+            find "$RUNNER_TEMP/DerivedData/Build/Products" \
+              -maxdepth 4 \
+              -name "*.app" \
+              -print
+            exit 1
+          fi
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+      - name: Create unsigned IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/IPA/Payload"
+
+          cp -R \
+            "$APP_PATH" \
+            "$RUNNER_TEMP/IPA/Payload/"
+
+          cd "$RUNNER_TEMP/IPA"
+
+          /usr/bin/zip \
+            -qry \
+            "$GITHUB_WORKSPACE/LyricsCarPlay-unsigned.ipa" \
+            Payload
+
+      - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: LyricsCarPlay-simulator
-          path: LyricsCarPlay-simulator.zip
+          name: LyricsCarPlay-unsigned-IPA
+          path: LyricsCarPlay-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload log on failure
+      - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: xcodebuild-log
           path: ${{ runner.temp }}/xcodebuild.log
           if-no-files-found: ignore
-
