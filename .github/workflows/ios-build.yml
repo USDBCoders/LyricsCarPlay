@@ -1,50 +1,171 @@
+name: Build unsigned iPhone IPA
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select \
+            -s /Applications/Xcode_16.4.app/Contents/Developer
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned application
+        run: |
+          set -o pipefail
+
+          xcodebuild \
+            -project LyricsCarPlay.xcodeproj \
+            -scheme LyricsCarPlay \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build \
+            | tee "$RUNNER_TEMP/xcodebuild.log"
+
       - name: Locate application
         run: |
           APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/LyricsCarPlay.app"
+
           if [ ! -d "$APP_PATH" ]; then
-            echo "Application introuvable : $APP_PATH"
+            echo "::error::Application introuvable : $APP_PATH"
+
+            find "$RUNNER_TEMP/DerivedData/Build/Products" \
+              -maxdepth 4 \
+              -name "*.app" \
+              -print
+
             exit 1
           fi
-          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
-      # AJOUTER ICI
-      - name: Validate all bundles
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "Application trouvée : $APP_PATH"
+
+      - name: Validate application and extensions
         run: |
           set -e
 
-          find "$APP_PATH" \
-            \( -name "*.app" -o -name "*.appex" \) \
-            -print0 |
+          FOUND_BUNDLE=0
+
           while IFS= read -r -d '' BUNDLE; do
+            FOUND_BUNDLE=1
             PLIST="$BUNDLE/Info.plist"
-            echo "Validation de $BUNDLE"
+
+            echo "Validation : $BUNDLE"
 
             if [ ! -f "$PLIST" ]; then
               echo "::error::Info.plist absent dans $BUNDLE"
               exit 1
             fi
 
-            BUNDLE_ID=$(/usr/libexec/PlistBuddy \
-              -c "Print :CFBundleIdentifier" \
-              "$PLIST")
+            BUNDLE_ID=$(
+              /usr/libexec/PlistBuddy \
+                -c "Print :CFBundleIdentifier" \
+                "$PLIST"
+            )
+
+            EXECUTABLE=$(
+              /usr/libexec/PlistBuddy \
+                -c "Print :CFBundleExecutable" \
+                "$PLIST"
+            )
+
+            PACKAGE_TYPE=$(
+              /usr/libexec/PlistBuddy \
+                -c "Print :CFBundlePackageType" \
+                "$PLIST"
+            )
 
             echo "CFBundleIdentifier=$BUNDLE_ID"
+            echo "CFBundleExecutable=$EXECUTABLE"
+            echo "CFBundlePackageType=$PACKAGE_TYPE"
 
             if [ -z "$BUNDLE_ID" ] ||
                [[ "$BUNDLE_ID" == *'$('* ]]; then
-              echo "::error::CFBundleIdentifier invalide"
+              echo "::error::CFBundleIdentifier invalide dans $BUNDLE"
               exit 1
             fi
-          done
+
+            if [ -z "$EXECUTABLE" ] ||
+               [[ "$EXECUTABLE" == *'$('* ]]; then
+              echo "::error::CFBundleExecutable invalide dans $BUNDLE"
+              exit 1
+            fi
+
+            if [ ! -f "$BUNDLE/$EXECUTABLE" ]; then
+              echo "::error::Exécutable absent : $BUNDLE/$EXECUTABLE"
+              exit 1
+            fi
+          done < <(
+            find "$APP_PATH" \
+              \( -name "*.app" -o -name "*.appex" \) \
+              -print0
+          )
+
+          if [ "$FOUND_BUNDLE" -eq 0 ]; then
+            echo "::error::Aucun bundle trouvé"
+            exit 1
+          fi
 
       - name: Create unsigned IPA
         run: |
-          mkdir -p "$RUNNER_TEMP/IPA/Payload"
+          IPA_DIRECTORY="$RUNNER_TEMP/IPA"
+          IPA_PATH="$GITHUB_WORKSPACE/LyricsCarPlay-unsigned.ipa"
+
+          rm -rf "$IPA_DIRECTORY"
+          mkdir -p "$IPA_DIRECTORY/Payload"
+
           cp -R \
             "$APP_PATH" \
-            "$RUNNER_TEMP/IPA/Payload/"
-          cd "$RUNNER_TEMP/IPA"
+            "$IPA_DIRECTORY/Payload/"
+
+          cd "$IPA_DIRECTORY"
+
           /usr/bin/zip \
             -qry \
-            "$GITHUB_WORKSPACE/LyricsCarPlay-unsigned.ipa" \
+            "$IPA_PATH" \
             Payload
+
+          if [ ! -f "$IPA_PATH" ]; then
+            echo "::error::La création de l’IPA a échoué"
+            exit 1
+          fi
+
+          echo "IPA créée : $IPA_PATH"
+          ls -lh "$IPA_PATH"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: LyricsCarPlay-unsigned-IPA
+          path: LyricsCarPlay-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore
